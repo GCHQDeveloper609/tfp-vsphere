@@ -596,6 +596,10 @@ func DiskDiffOperation(d *schema.ResourceDiff, c *govmomi.Client) error {
 
 		switch nm["controller_type"] {
 		case "scsi":
+			unitNumber := nm["unit_number"].(int)
+			if unitNumber == 7 {
+				return fmt.Errorf("disk: unit_number %d is reserved for the SCSI controller", unitNumber)
+			}
 			if _, ok := scsiUnits[nm["unit_number"].(int)]; ok {
 				return fmt.Errorf("disk: duplicate SCSI unit_number %d", nm["unit_number"].(int))
 			}
@@ -712,31 +716,51 @@ nextNew:
 // * All disks survive a disk sub-resource read operation.
 //
 // This function is meant to be called during diff customization. It is a
-// subset of the normal refresh behaviour as we don't worry about checking
+// subset of the normal refresh behavior as we don't worry about checking
 // existing state.
 func DiskCloneValidateOperation(d *schema.ResourceDiff, c *govmomi.Client, l object.VirtualDeviceList, linked bool) error {
 	log.Printf("[DEBUG] DiskCloneValidateOperation: Checking existing virtual disk configuration")
-	devices := SelectDisks(l, d.Get("scsi_controller_count").(int), d.Get("sata_controller_count").(int), d.Get("ide_controller_count").(int))
-	// Sort the device list, in case it's not sorted already.
-	devSort := virtualDeviceListSorter{
-		Sort:       devices,
-		DeviceList: l,
-	}
-	log.Printf("[DEBUG] DiskCloneValidateOperation: Disk devices order before sort: %s", DeviceListString(devices))
-	sort.Sort(devSort)
-	devices = devSort.Sort
-	log.Printf("[DEBUG] DiskCloneValidateOperation: Disk devices order after sort: %s", DeviceListString(devices))
-	// Do the same for our listed disks.
-	curSet := d.Get(subresourceTypeDisk).([]interface{})
-	log.Printf("[DEBUG] DiskCloneValidateOperation: Current resource set: %s", subresourceListString(curSet))
-	sort.Sort(virtualDiskSubresourceSorter(curSet))
-	log.Printf("[DEBUG] DiskCloneValidateOperation: Resource set order after sort: %s", subresourceListString(curSet))
 
-	// Quickly validate length. If there are more disks in the template than
-	// there is in the configuration, kick out an error.
-	if len(devices) > len(curSet) {
-		return fmt.Errorf("not enough disks in configuration - you need at least %d to use this template (current: %d)", len(devices), len(curSet))
+    // Do the same for our listed disks.
+    curSet := d.Get(subresourceTypeDisk).([]interface{})
+    log.Printf("[DEBUG] DiskCloneValidateOperation: Current resource set: %s", subresourceListString(curSet))
+    sort.Sort(virtualDiskSubresourceSorter(curSet))
+    log.Printf("[DEBUG] DiskCloneValidateOperation: Resource set order after sort: %s", subresourceListString(curSet))
+
+	// Select and validate SCSI devices.
+	scsiDevices := SelectDisks(l, d.Get("scsi_controller_count").(int), 0, 0)
+	if len(scsiDevices) > 7 {
+		scsiDevices = scsiDevices[:len(scsiDevices)-1] // Subtract 1 for the reserved unit number 7 if there are more than 7 devices.
 	}
+	if len(curSet) == 0 || len(scsiDevices) > len(curSet) {
+		return fmt.Errorf("not enough SCSI disks in configuration - you need at least %d to use this template (current: %d)", len(scsiDevices), len(curSet))
+	}
+
+	// Select and validate SATA devices.
+	sataDevices := SelectDisks(l, 0, d.Get("sata_controller_count").(int), 0)
+	if len(curSet) == 0 || len(sataDevices) > len(curSet) {
+		return fmt.Errorf("not enough SATA disks in configuration - you need at least %d to use this template (current: %d)", len(sataDevices), len(curSet))
+	}
+
+	// Select and validate IDE devices.
+	ideDevices := SelectDisks(l, 0, 0, d.Get("ide_controller_count").(int))
+	if len(curSet) == 0 || len(ideDevices) > len(curSet) {
+		return fmt.Errorf("not enough IDE disks in configuration - you need at least %d to use this template (current: %d)", len(ideDevices), len(curSet))
+	}
+
+    // Combine all devices.
+    devices := append(scsiDevices, sataDevices...)
+    devices = append(devices, ideDevices...)
+
+    // Sort the device list, in case it's not sorted already.
+    devSort := virtualDeviceListSorter{
+        Sort:       devices,
+        DeviceList: l,
+    }
+    log.Printf("[DEBUG] DiskCloneValidateOperation: Disk devices order before sort: %s", DeviceListString(devices))
+    sort.Sort(devSort)
+    devices = devSort.Sort
+    log.Printf("[DEBUG] DiskCloneValidateOperation: Disk devices order after sort: %s", DeviceListString(devices))
 
 	// Do test read operations on all disks.
 	log.Printf("[DEBUG] DiskCloneValidateOperation: Running test read operations on all disks")
@@ -1614,19 +1638,21 @@ func (r *DiskSubresource) DiffGeneral() error {
 		return err
 	}
 
-	// Enforce the maximum unit number, which is the current value of
-	// scsi_controller_count * 15 - 1.
+	// Enforce the maximum unit numbers.
 	switch r.Get("controller_type").(string) {
 	case "scsi":
 		ctlrCount := r.rdd.Get("scsi_controller_count").(int)
-		maxUnit := ctlrCount*15 - 1
+		maxUnit := ctlrCount*15
 		currentUnit := r.Get("unit_number").(int)
+		if currentUnit == 7 {
+			return fmt.Errorf("unit_number %d on SCSI is reserved for the controller itself", currentUnit)
+		}
 		if currentUnit > maxUnit {
 			return fmt.Errorf("unit_number on disk %q too high (%d) - maximum value is %d with %d SCSI controller(s)", name, currentUnit, maxUnit, ctlrCount)
 		}
 	case "sata":
 		ctlrCount := r.rdd.Get("sata_controller_count").(int)
-		maxUnit := ctlrCount * 30
+		maxUnit := ctlrCount*30
 		currentUnit := r.Get("unit_number").(int)
 		if currentUnit > maxUnit {
 			return fmt.Errorf("unit_number on disk %q too high (%d) - maximum value is %d with %d SATA controller(s)", name, currentUnit, maxUnit, ctlrCount)
@@ -1636,12 +1662,13 @@ func (r *DiskSubresource) DiffGeneral() error {
 		maxUnit := ctlrCount*2 - 1
 		currentUnit := r.Get("unit_number").(int)
 		if currentUnit == 0 {
-			return fmt.Errorf("unit_number 0 on IDE is reserved for CD-ROM")
+			return fmt.Errorf("unit_number %d on IDE is reserved for CD-ROM", currentUnit)
 		}
 		if currentUnit > maxUnit {
 			return fmt.Errorf("unit_number on disk %q too high (%d) - maximum value is %d with %d IDE controller(s)", name, currentUnit, maxUnit, ctlrCount)
 		}
 	}
+
 	if r.Get("attach").(bool) {
 		switch {
 		case r.Get("datastore_id").(string) == "":
