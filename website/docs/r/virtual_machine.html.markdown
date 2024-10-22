@@ -104,7 +104,7 @@ resource "vsphere_virtual_machine" "vm" {
     network_id = data.vsphere_network.network.id
   }
   disk {
-    label = "disk0"
+    label = "Hard Disk 1"
     size  = 20
   }
 }
@@ -160,7 +160,7 @@ resource "vsphere_virtual_machine" "vm" {
     adapter_type = data.vsphere_virtual_machine.template.network_interface_types[0]
   }
   disk {
-    label            = "disk0"
+    label            = "Hard Disk 1"
     size             = data.vsphere_virtual_machine.template.disks.0.size
     thin_provisioned = data.vsphere_virtual_machine.template.disks.0.thin_provisioned
   }
@@ -541,7 +541,7 @@ resource "vsphere_virtual_machine" "vm" {
     adapter_type = data.vsphere_virtual_machine.template.network_interface_types[0]
   }
   disk {
-    name             = "disk0"
+    name             = "Hard Disk 1"
     size             = data.vsphere_virtual_machine.template_from_ovf.disks.0.size
     thin_provisioned = data.vsphere_virtual_machine.template_from_ovf.disks.0.thin_provisioned
   }
@@ -610,7 +610,7 @@ resource "vsphere_virtual_machine" "vm" {
     network_id = data.vsphere_network.network.id
   }
   disk {
-    label = "disk0"
+    label = "Hard Disk 1"
     size  = 20
   }
 }
@@ -854,7 +854,7 @@ Virtual disks are managed by adding one or more instance of the `disk` block.
 
 At a minimum, both the `label` and `size` attributes must be provided.  The `unit_number` is required for any disk other than the first, and there must be at least one resource with the implicit number of `0`.
 
-The following example demonstrates and abridged multi-disk configuration:
+The following example demonstrates an abridged multi-disk configuration:
 
 **Example**:
 
@@ -862,11 +862,11 @@ The following example demonstrates and abridged multi-disk configuration:
 resource "vsphere_virtual_machine" "vm" {
   # ... other configuration ...
   disk {
-    label       = "disk0"
+    label       = "Hard Disk 1"
     size        = "10"
   }
   disk {
-    label       = "disk1"
+    label       = "Hard Disk 2"
     size        = "100"
     unit_number = 1
   }
@@ -1518,6 +1518,24 @@ When cloning from a template, there are additional requirements in both the reso
 
 You can use the [`vsphere_virtual_machine`][tf-vsphere-virtual-machine-ds] data source, which provides disk attributes, network interface types, SCSI bus types, and the guest ID of the source template, to return this information. See the section on [cloning and customization](#cloning-and-customization) for more information.
 
+## Trusted Platform Module
+
+When creating a virtual machine or cloning one from a template, you have the option to add a virtual Trusted Platform Module device. Refer to the requirements in the VMware vSphere [product documentation](https://docs.vmware.com/en/VMware-vSphere/8.0/vsphere-security/GUID-6F811A7A-D58B-47B4-84B4-73391D55C268.html).
+
+**Example**:
+
+```hcl
+resource "vsphere_virtual_machine" "vm" {
+  # ... other configuration ...
+   vtpm {
+    version = "2.0"
+  }
+  # ... other configuration ...
+}
+```
+
+~> **NOTE:** Supported versions include 1.2 or 2.0.
+
 ## Virtual Machine Migration
 
 The `vsphere_virtual_machine` resource supports live migration both on the host and storage level. You can migrate the virtual machine to another host, cluster, resource pool, or datastore. You can also migrate or pin a virtual disk to a specific datastore.
@@ -1545,12 +1563,12 @@ resource "vsphere_virtual_machine" "vm" {
   # ... other configuration ...
   datastore_id = data.vsphere_datastore.vm_datastore.id
   disk {
-    label = "disk0"
+    label = "Hard Disk 1"
     size  = 10
   }
   disk {
     datastore_id = data.vsphere_datastore.pinned_datastore.id
-    label        = "disk1"
+    label        = "Hard Disk 2"
     size         = 100
     unit_number  = 1
   }
@@ -1602,6 +1620,7 @@ The virtual machine will be rebooted if any of the following parameters are chan
 * `tools_upgrade_policy`
 * `vbs_enabled`
 * `vvtd_enabled`
+* `vtpm`
 
 ## Attribute Reference
 
@@ -1661,7 +1680,9 @@ Many of the requirements for [cloning](#additional-requirements-and-notes-for-cl
 
 The following requirements apply to import:
 
-* The disks must have a [`label`](#label) argument assigned in a convention matching `diskN`, starting with disk number 0, based on each virtual disk order on the SCSI bus. As an example, a disk on SCSI controller `0` with a unit number of `0` would be labeled as `disk0`, a disk on the same controller with a unit number of `1` would be `disk1`, but the next disk, which is on SCSI controller `1` with a unit number of `0`, still becomes `disk2`.
+* The disks must have a [`label`](#label) argument assigned in a convention matching `Hard Disk`, starting with disk number 0, based on each virtual disk order on the SCSI bus. As an example, a disk on SCSI controller `0` with a unit number of `0` would be labeled as `Hard Disk 0`, a disk on the same controller with a unit number of `1` would be `Hard Disk 1`, but the next disk, which is on SCSI controller `1` with a unit number of `0`, still becomes `Hard Disk 2`.
+
+~> **NOTE:** Any custom `label` set at deployment of machine through Terraform, on import will not have the custom `label` and will default to `Hard Disk _x_`.
 
 * Disks are always imported with [`keep_on_remove`](#keep_on_remove) enabled until the first `terraform apply` run which will remove the setting for known disks. This process safeguards against naming or accounting mistakes in the disk configuration.
 
